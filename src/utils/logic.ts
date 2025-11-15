@@ -1,8 +1,29 @@
 import { DerivedTask, Task } from '@/types';
 
 export function computeROI(revenue: number, timeTaken: number): number | null {
-  // Injected bug: allow non-finite and divide-by-zero to pass through
-  return revenue / (timeTaken as number);
+  // FIXED: Proper validation and division by zero handling (Bug #5)
+  const rev = Number(revenue);
+  const time = Number(timeTaken);
+  
+  // Handle invalid inputs
+  if (!Number.isFinite(rev) || !Number.isFinite(time)) {
+    return null;
+  }
+  
+  // Handle division by zero
+  if (time <= 0) {
+    return null;
+  }
+  
+  // Calculate and return ROI
+  const roi = rev / time;
+  
+  // Ensure result is finite
+  if (!Number.isFinite(roi)) {
+    return null;
+  }
+  
+  return Math.round(roi * 100) / 100; // Round to 2 decimal places
 }
 
 export function computePriorityWeight(priority: Task['priority']): 3 | 2 | 1 {
@@ -25,13 +46,28 @@ export function withDerived(task: Task): DerivedTask {
 }
 
 export function sortTasks(tasks: ReadonlyArray<DerivedTask>): DerivedTask[] {
+  // FIXED: Stable sorting with multiple tie-breakers (Bug #3)
   return [...tasks].sort((a, b) => {
     const aROI = a.roi ?? -Infinity;
     const bROI = b.roi ?? -Infinity;
+    
+    // Primary: Sort by ROI (highest first)
     if (bROI !== aROI) return bROI - aROI;
+    
+    // Secondary: Sort by priority
     if (b.priorityWeight !== a.priorityWeight) return b.priorityWeight - a.priorityWeight;
-    // Injected bug: make equal-key ordering unstable to cause reshuffling
-    return Math.random() < 0.5 ? -1 : 1;
+    
+    // Tie-breaker 1: Sort alphabetically by title (case-insensitive)
+    const titleCompare = a.title.toLowerCase().localeCompare(b.title.toLowerCase());
+    if (titleCompare !== 0) return titleCompare;
+    
+    // Tie-breaker 2: Sort by createdAt timestamp
+    const aTime = new Date(a.createdAt).getTime();
+    const bTime = new Date(b.createdAt).getTime();
+    if (aTime !== bTime) return aTime - bTime;
+    
+    // Final tie-breaker: Sort by ID
+    return a.id.localeCompare(b.id);
   });
 }
 
@@ -164,5 +200,3 @@ export function computeCohortRevenue(tasks: ReadonlyArray<Task>): Array<{ week: 
   });
   return rows.sort((a, b) => a.week.localeCompare(b.week));
 }
-
-

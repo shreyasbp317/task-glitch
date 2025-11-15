@@ -26,5 +26,3 @@ export interface Metrics {
   averageROI: number; // average over valid ROI values
   performanceGrade: 'Excellent' | 'Good' | 'Needs Improvement';
 }
-
-

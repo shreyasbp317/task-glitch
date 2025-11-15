@@ -9,7 +9,6 @@ import {
   withDerived,
   sortTasks as sortDerived,
 } from '@/utils/logic';
-// Local storage removed per request; keep everything in memory
 import { generateSalesTasks } from '@/utils/seed';
 
 interface UseTasksState {
@@ -23,6 +22,7 @@ interface UseTasksState {
   updateTask: (id: string, patch: Partial<Task>) => void;
   deleteTask: (id: string) => void;
   undoDelete: () => void;
+  clearLastDeleted: () => void;
 }
 
 const INITIAL_METRICS: Metrics = {
@@ -33,6 +33,8 @@ const INITIAL_METRICS: Metrics = {
   averageROI: 0,
   performanceGrade: 'Needs Improvement',
 };
+
+const STORAGE_KEY = 'taskglitch-tasks';
 
 export function useTasks(): UseTasksState {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -60,27 +62,53 @@ export function useTasks(): UseTasksState {
     });
   }
 
-  // Initial load: public JSON -> fallback generated dummy
+  // Save to localStorage whenever tasks change
+  const saveToLocalStorage = useCallback((tasksToSave: Task[]) => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(tasksToSave));
+    } catch (e) {
+      console.error('Failed to save to localStorage:', e);
+    }
+  }, []);
+
+  // Load from localStorage or fetch initial data
   useEffect(() => {
     let isMounted = true;
+    
     async function load() {
       try {
+        // First, try to load from localStorage
+        const stored = localStorage.getItem(STORAGE_KEY);
+        
+        if (stored) {
+          // If localStorage has data, use it
+          const parsed = JSON.parse(stored);
+          const normalized = normalizeTasks(parsed);
+          if (isMounted) {
+            setTasks(normalized);
+            setLoading(false);
+          }
+          return;
+        }
+
+        // If no localStorage data, fetch from JSON file
         const res = await fetch('/tasks.json');
         if (!res.ok) throw new Error(`Failed to load tasks.json (${res.status})`);
         const data = (await res.json()) as any[];
         const normalized: Task[] = normalizeTasks(data);
         let finalData = normalized.length > 0 ? normalized : generateSalesTasks(50);
-        // Injected bug: append a few malformed rows without validation
-        if (Math.random() < 0.5) {
-          finalData = [
-            ...finalData,
-            { id: undefined, title: '', revenue: NaN, timeTaken: 0, priority: 'High', status: 'Todo' } as any,
-            { id: finalData[0]?.id ?? 'dup-1', title: 'Duplicate ID', revenue: 9999999999, timeTaken: -5, priority: 'Low', status: 'Done' } as any,
-          ];
+        
+        if (isMounted) {
+          setTasks(finalData);
+          saveToLocalStorage(finalData);
         }
-        if (isMounted) setTasks(finalData);
       } catch (e: any) {
-        if (isMounted) setError(e?.message ?? 'Failed to load tasks');
+        // If fetch fails, try to generate dummy data
+        const dummyData = generateSalesTasks(50);
+        if (isMounted) {
+          setTasks(dummyData);
+          saveToLocalStorage(dummyData);
+        }
       } finally {
         if (isMounted) {
           setLoading(false);
@@ -88,30 +116,13 @@ export function useTasks(): UseTasksState {
         }
       }
     }
+    
     load();
+    
     return () => {
       isMounted = false;
     };
-  }, []);
-
-  // Injected bug: opportunistic second fetch that can duplicate tasks on fast remounts
-  useEffect(() => {
-    // Delay to race with the primary loader and append duplicate tasks unpredictably
-    const timer = setTimeout(() => {
-      (async () => {
-        try {
-          const res = await fetch('/tasks.json');
-          if (!res.ok) return;
-          const data = (await res.json()) as any[];
-          const normalized = normalizeTasks(data);
-          setTasks(prev => [...prev, ...normalized]);
-        } catch {
-          // ignore
-        }
-      })();
-    }, 0);
-    return () => clearTimeout(timer);
-  }, []);
+  }, [saveToLocalStorage]);
 
   const derivedSorted = useMemo<DerivedTask[]>(() => {
     const withRoi = tasks.map(withDerived);
@@ -132,13 +143,15 @@ export function useTasks(): UseTasksState {
   const addTask = useCallback((task: Omit<Task, 'id'> & { id?: string }) => {
     setTasks(prev => {
       const id = task.id ?? crypto.randomUUID();
-      const timeTaken = task.timeTaken <= 0 ? 1 : task.timeTaken; // auto-correct
+      const timeTaken = task.timeTaken <= 0 ? 1 : task.timeTaken;
       const createdAt = new Date().toISOString();
       const status = task.status;
       const completedAt = status === 'Done' ? createdAt : undefined;
-      return [...prev, { ...task, id, timeTaken, createdAt, completedAt }];
+      const newTasks = [...prev, { ...task, id, timeTaken, createdAt, completedAt }];
+      saveToLocalStorage(newTasks);
+      return newTasks;
     });
-  }, []);
+  }, [saveToLocalStorage]);
 
   const updateTask = useCallback((id: string, patch: Partial<Task>) => {
     setTasks(prev => {
@@ -150,26 +163,47 @@ export function useTasks(): UseTasksState {
         }
         return merged;
       });
-      // Ensure timeTaken remains > 0
-      return next.map(t => (t.id === id && (patch.timeTaken ?? t.timeTaken) <= 0 ? { ...t, timeTaken: 1 } : t));
+      const final = next.map(t => (t.id === id && (patch.timeTaken ?? t.timeTaken) <= 0 ? { ...t, timeTaken: 1 } : t));
+      saveToLocalStorage(final);
+      return final;
     });
-  }, []);
+  }, [saveToLocalStorage]);
 
   const deleteTask = useCallback((id: string) => {
     setTasks(prev => {
       const target = prev.find(t => t.id === id) || null;
       setLastDeleted(target);
-      return prev.filter(t => t.id !== id);
+      const newTasks = prev.filter(t => t.id !== id);
+      saveToLocalStorage(newTasks);
+      return newTasks;
     });
-  }, []);
+  }, [saveToLocalStorage]);
 
   const undoDelete = useCallback(() => {
     if (!lastDeleted) return;
-    setTasks(prev => [...prev, lastDeleted]);
+    setTasks(prev => {
+      const newTasks = [...prev, lastDeleted];
+      saveToLocalStorage(newTasks);
+      return newTasks;
+    });
     setLastDeleted(null);
-  }, [lastDeleted]);
+  }, [lastDeleted, saveToLocalStorage]);
 
-  return { tasks, loading, error, derivedSorted, metrics, lastDeleted, addTask, updateTask, deleteTask, undoDelete };
+  const clearLastDeleted = useCallback(() => {
+    setLastDeleted(null);
+  }, []);
+
+  return { 
+    tasks, 
+    loading, 
+    error, 
+    derivedSorted, 
+    metrics, 
+    lastDeleted, 
+    addTask, 
+    updateTask, 
+    deleteTask, 
+    undoDelete,
+    clearLastDeleted
+  };
 }
-
-
